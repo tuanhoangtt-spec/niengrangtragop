@@ -1,0 +1,185 @@
+// ============================================
+// AVA DENTAL — PRISMA SCHEMA (Phase 0 — Nền tảng)
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- AUTH & RBAC ----------
+
+enum Role {
+  ADMIN     // Toàn quyền: publish, xóa, quản lý user, cấu hình SEO/settings
+  EDITOR    // Viết bài, sửa page, upload ảnh — KHÔNG publish trực tiếp
+  REVIEWER  // Chỉ duyệt nội dung (đổi status PENDING_REVIEW -> PUBLISHED)
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  passwordHash  String
+  role          Role      @default(EDITOR)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  posts         Post[]
+  pageEdits     Page[]
+  auditLogs     AuditLog[]
+  postVersions  PostVersion[]
+
+  @@index([email])
+}
+
+// ---------- CONTENT: PAGE (do admin cấu hình qua Page Builder) ----------
+
+enum PageStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+}
+
+model Page {
+  id          String     @id @default(cuid())
+  slug        String     @unique          // "" (rỗng) = trang chủ
+  title       String
+  layoutJson  Json                        // Danh sách block do page-builder render
+  status      PageStatus @default(DRAFT)
+  seo         SeoMeta?
+  updatedBy   User?      @relation(fields: [updatedById], references: [id])
+  updatedById String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([slug])
+  @@index([status])
+}
+
+// ---------- CONTENT: POST (bài viết tin tức, có versioning) ----------
+
+enum PostStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+}
+
+model Post {
+  id           String       @id @default(cuid())
+  slug         String       @unique
+  title        String
+  excerpt      String?
+  contentHtml  String       // Đã sanitize trước khi lưu — xem lib/sanitize.ts
+  coverImage   String?
+  status       PostStatus   @default(DRAFT)
+  featured     Boolean      @default(false)
+  viewCount    Int          @default(0)
+  publishedAt  DateTime?
+
+  author       User?        @relation(fields: [authorId], references: [id])
+  authorId     String?
+  category     Category     @relation(fields: [categoryId], references: [id])
+  categoryId   String
+  tags         Tag[]
+  seo          SeoMeta?
+  versions     PostVersion[]
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([slug])
+  @@index([status])
+  @@index([categoryId])
+}
+
+// Snapshot mỗi lần lưu — cho phép revert (điều chỉnh đã thống nhất ở Giai đoạn 0/1)
+model PostVersion {
+  id          String   @id @default(cuid())
+  post        Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId      String
+  title       String
+  contentHtml String
+  editedBy    User?    @relation(fields: [editedById], references: [id])
+  editedById  String?
+  createdAt   DateTime @default(now())
+
+  @@index([postId])
+}
+
+model Category {
+  id    String @id @default(cuid())
+  name  String
+  slug  String @unique
+  posts Post[]
+}
+
+model Tag {
+  id    String @id @default(cuid())
+  name  String @unique
+  posts Post[]
+}
+
+// ---------- SEO ----------
+
+model SeoMeta {
+  id              String  @id @default(cuid())
+  metaTitle       String?
+  metaDescription String?
+  ogImage         String?
+  canonicalUrl    String?
+  noindex         Boolean @default(false)
+
+  page            Page?   @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  pageId          String? @unique
+  post            Post?   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId          String? @unique
+}
+
+model Redirect {
+  id       String @id @default(cuid())
+  fromPath String @unique
+  toPath   String
+  type     Int    @default(301)
+  createdAt DateTime @default(now())
+}
+
+// ---------- MEDIA (thư viện ảnh tập trung) ----------
+
+model Media {
+  id         String   @id @default(cuid())
+  url        String
+  altText    String?           // Bắt buộc nhập ở UI — ảnh hưởng SEO ảnh
+  width      Int?
+  height     Int?
+  sizeBytes  Int?
+  usageCount Int      @default(0)   // Tăng khi gán vào Post/Page, giảm khi gỡ — dùng để lọc orphan
+  createdAt  DateTime @default(now())
+
+  @@index([usageCount])
+}
+
+// ---------- SETTINGS (cấu hình chung, key-value) ----------
+
+model Setting {
+  key   String @id   // vd: "hotline", "zalo", "address", "ga4_id", "working_hours"
+  value String
+}
+
+// ---------- AUDIT LOG (bắt buộc cho site y tế) ----------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  action    String   // "post.publish", "page.update", "media.delete"...
+  targetId  String
+  detail    Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([targetId])
+}
